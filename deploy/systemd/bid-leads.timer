@@ -1,0 +1,10 @@
+[Unit]
+Description=Find private-sector leads Mondays at 7:15 Central, before the 8:00 brief
+
+[Timer]
+OnCalendar=Mon *-*-* 07:15:00 America/Chicago
+# If the machine was asleep or off, run once it comes back.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

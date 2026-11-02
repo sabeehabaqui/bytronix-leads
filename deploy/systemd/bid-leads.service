@@ -1,0 +1,14 @@
+[Unit]
+Description=Bytronix private-sector lead finder
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/bytronix-leads
+# User services can't wait on network-online; after a reboot the timer can fire first.
+ExecStartPre=/usr/bin/timeout 300 /bin/sh -c 'until getent hosts www.sec.gov >/dev/null; do sleep 5; done'
+ExecStart=%h/bytronix-leads/.venv/bin/python leads.py
+TimeoutStartSec=30min
+StandardOutput=append:%h/bytronix-leads/leads.log
+StandardError=append:%h/bytronix-leads/leads.log

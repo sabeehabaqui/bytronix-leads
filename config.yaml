@@ -1,0 +1,29 @@
+# Private-sector lead finder: edit freely.
+
+env_file: ~/bid-forecasting-tool/.env   # same Anthropic key as the other tools
+user_agent: "BytronixLabs-lead-finder/1.0 (support@bytronixlabs.com)"   # the SEC requires a contact here
+delay: 0.5                 # seconds between requests
+ai_model: claude-sonnet-5-5
+ai_per_run: 10             # fit checks each run; cached per lead
+
+form_d:
+  state: IL
+  days: 60                 # filing lookback
+  min_sold: 250000         # below this they rarely have budget for outside help
+  max_sold: 30000000       # above this they usually have a tech team and a vendor list
+  # Form D industry groups worth a look. Regulated work ranks first, per the income plan.
+  regulated: ["Other Health Care", "Biotechnology", "Health Insurance", "Hospitals", "Pharmaceuticals",
+              "Other Banking and Financial Services", "Commercial Banking", "Insurance"]
+  other: ["Other Technology", "Computers", "Telecommunications", "Business Services", "Other Energy"]
+
+nih:
+  state: IL
+  activity_codes: ["R41", "R42", "R43", "R44", "U43", "U44"]   # SBIR and STTR grants: small companies only
+  years_back: 1            # fiscal years before the current one
+
+metro:                     # Chicago-area cities rank ahead of the rest of Illinois
+  [CHICAGO, EVANSTON, SKOKIE, "OAK BROOK", NAPERVILLE, WHEATON, "GLENDALE HEIGHTS", LOMBARD, ADDISON, "ELK GROVE VILLAGE",
+   SCHAUMBURG, "ARLINGTON HEIGHTS", "DOWNERS GROVE", "LA GRANGE", LAGRANGE, "HANOVER PARK", ELMHURST, "ST. CHARLES",
+   AURORA, ELGIN, "DES PLAINES", "PARK RIDGE", GLENVIEW, NORTHBROOK, DEERFIELD, LIBERTYVILLE, "LAKE FOREST", "LONG GROVE",
+   WILMETTE, GLENCOE, "OAK PARK", ITASCA, ROSEMONT, ROMEOVILLE, BOLINGBROOK, LISLE, WOODRIDGE, "WEST CHICAGO", PLAINFIELD,
+   WARRENVILLE, BARTLETT, "BUFFALO GROVE", "VERNON HILLS", LINCOLNSHIRE, "OAK LAWN", "ORLAND PARK", TINLEY, JOLIET]

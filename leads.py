@@ -1,0 +1,362 @@
+#!/usr/bin/env python3
+"""Private-sector leads: Illinois companies with a fresh, public reason to spend on software.
+
+Sources are official and public: SEC Form D filings (a company just raised money) and NIH
+RePORTER (a small company holds an SBIR/STTR grant). It never scrapes LinkedIn or review
+sites, and it never sends anything: the report gives a person to find and an opening line.
+
+Usage:
+    python leads.py               # collect, check fit, write the report and CSV
+    python leads.py --no-ai       # collect only
+    python leads.py --open        # and open the report
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import html
+import json
+import os
+import re
+import sqlite3
+import sys
+import time
+import webbrowser
+import xml.etree.ElementTree as ET
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta
+from pathlib import Path
+
+import requests
+import yaml
+from dotenv import load_dotenv
+
+SEARCH = "https://efts.sec.gov/LATEST/search-index"
+ARCHIVE = "https://www.sec.gov/Archives/edgar/data/{cik}/{adsh}/primary_doc.xml"
+FILING = "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={cik}&type=D"
+NIH = "https://api.reporter.nih.gov/v2/projects/search"
+NIH_FIELDS = ["ProjectTitle", "Organization", "ContactPiName", "AwardAmount", "ProjectStartDate",
+              "ProjectEndDate", "AbstractText", "ProjectDetailUrl", "FiscalYear", "ProjectNum"]
+PLACEHOLDER = re.compile(r"^(n/?a|none|-+|\*|llc)$", re.I)
+ENTITY = re.compile(r"\b(llc|l\.?p\.?|inc|management|partners)\b", re.I)   # firms listed in a person's fields
+VEHICLE = re.compile(r"\b(fund|feeder|investors?|bancorp|spv)\b", re.I)     # raising money isn't building software
+OFFERS = ("Security readiness review", "AI workflow pilot", "Modernization assessment")
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS leads (
+    key TEXT PRIMARY KEY,
+    source TEXT, company TEXT, city TEXT, sector TEXT, signal TEXT, signal_day TEXT, amount INTEGER,
+    contact TEXT, contact_title TEXT, phone TEXT, url TEXT, detail TEXT, regulated INTEGER, score INTEGER,
+    fit TEXT DEFAULT '', why TEXT DEFAULT '', offer TEXT DEFAULT '', opener TEXT DEFAULT '',
+    first_seen TEXT, last_seen TEXT, given_on TEXT DEFAULT ''
+);
+"""
+PROMPT = """Bytronix Labs is a two-person custom software firm in Glendale Heights, IL, new as a company, with
+principals who worked on government and financial systems (California Franchise Tax Board, California
+public health, Bloomberg, Accenture). It sells three fixed-price starting offers: {offers}.
+
+A company came up from a public record. Decide whether a short cold email is worth sending.
+
+Company: {company} ({city}, IL)
+Sector: {sector}
+Public signal: {signal}
+Detail: {detail}
+
+Answer YES if the company plausibly builds or runs software and a two-person outside firm could help.
+Answer MAYBE if you can't tell what the company does. Answer NO for investment vehicles, property or
+holding companies, and anything with no use for custom software. Don't guess at facts you weren't given.
+
+Reply with JSON only:
+{{"fit": "YES|MAYBE|NO", "why": "one plain sentence", "offer": "one of the three offers, or empty",
+"opener": "one sentence referring to the public signal, written to the company's lead, naming no past clients"}}"""
+
+
+@dataclass
+class Lead:
+    key: str
+    source: str
+    company: str
+    city: str
+    sector: str
+    signal: str
+    signal_day: str
+    amount: int = 0
+    contact: str = ""
+    contact_title: str = ""
+    phone: str = ""
+    url: str = ""
+    detail: str = ""
+    regulated: bool = False
+    score: int = field(default=0)
+
+
+class Http:
+    """A declared user agent and a polite delay. A 403 is a refusal: stop asking that host."""
+
+    def __init__(self, user_agent: str, delay: float):
+        self.s = requests.Session()
+        self.s.headers.update({"User-Agent": user_agent})
+        self.delay, self._last = delay, 0.0
+
+    def call(self, method: str, url: str, **kw) -> requests.Response:
+        wait = self.delay - (time.time() - self._last)
+        if wait > 0:
+            time.sleep(wait)
+        r = self.s.request(method, url, timeout=60, **kw)
+        self._last = time.time()
+        r.raise_for_status()
+        return r
+
+
+def amount(text: str) -> int:
+    return int(text) if text.isdigit() else 0
+
+
+def parse_form_d(xml_text: str, cfg: dict, filed: str, cik: str) -> Lead | None:
+    """A Lead from one filing, or None when its industry or size doesn't fit."""
+    root = ET.fromstring(xml_text)
+    get = lambda path: (root.findtext(path) or "").strip()
+    sector = get(".//industryGroup/industryGroupType")
+    regulated = sector in cfg["regulated"]
+    if not regulated and sector not in cfg["other"]:
+        return None
+    if get(".//issuerAddress/stateOrCountry") != cfg["state"] and get(".//issuerStateOrCountry") != cfg["state"]:
+        return None
+    sold = amount(get(".//totalAmountSold"))
+    if not cfg["min_sold"] <= sold <= cfg["max_sold"]:
+        return None
+    contact, title = "", ""
+    for person in root.findall(".//relatedPersonInfo"):
+        first = (person.findtext(".//firstName") or "").strip()
+        last = (person.findtext(".//lastName") or "").strip()
+        if first and last and not PLACEHOLDER.match(first) and not ENTITY.search(first):
+            roles = [r.text for r in person.findall(".//relationship") if r.text]
+            contact, title = f"{first} {last}".title(), ", ".join(roles)
+            if "Executive Officer" in roles:     # the person a cold email should go to
+                break
+    company = get(".//primaryIssuer/entityName")
+    if VEHICLE.search(company):
+        return None
+    return Lead(key=f"formd:{cik}", source="SEC Form D", company=company, regulated=regulated, sector=sector,
+                city=(get(".//issuerAddress/city") or get(".//primaryIssuer//city")).upper(),
+                signal=f"Raised ${sold:,} (Form D filed {filed})", signal_day=filed, amount=sold, contact=contact,
+                contact_title=title, phone=get(".//issuerPhoneNumber"), url=FILING.format(cik=cik),
+                detail=f"Offering sold ${sold:,}; industry group {sector}.")
+
+
+def form_d(http: Http, cfg: dict, today: date, log=print) -> list[Lead]:
+    start = (today - timedelta(days=cfg["days"])).isoformat()
+    newest: dict[str, tuple[str, str]] = {}    # cik → (filed, accession); later filings amend earlier ones
+    offset = 0
+    while True:
+        data = http.call("GET", SEARCH, params={"forms": "D", "locationCodes": cfg["state"], "dateRange": "custom", "startdt": start,
+                                                "enddt": today.isoformat(), "from": offset}).json()["hits"]
+        for hit in data["hits"]:
+            src = hit["_source"]
+            cik = src["ciks"][0].lstrip("0")
+            if cik not in newest or src["file_date"] > newest[cik][0]:
+                newest[cik] = (src["file_date"], src["adsh"])
+        offset += len(data["hits"])
+        if not data["hits"] or offset >= data["total"]["value"]:
+            break
+    out = []
+    for cik, (filed, adsh) in newest.items():
+        try:
+            doc = http.call("GET", ARCHIVE.format(cik=cik, adsh=adsh.replace("-", ""))).text
+            lead = parse_form_d(doc, cfg, filed, cik)
+        except requests.HTTPError as e:
+            if e.response is not None and e.response.status_code == 403:
+                raise
+            log(f"  form d: skipped {adsh}: {e}")
+            continue
+        except ET.ParseError:
+            log(f"  form d: unreadable {adsh}")
+            continue
+        if lead:
+            out.append(lead)
+    log(f"  SEC Form D: {len(newest)} Illinois filers, {len(out)} operating companies in range")
+    return out
+
+
+def parse_nih(rows: list[dict]) -> list[Lead]:
+    """One Lead per company, from its most recent grant."""
+    best: dict[str, dict] = {}
+    for r in rows:
+        org = r["organization"]["org_name"]
+        if org not in best or (r.get("fiscal_year") or 0) > (best[org].get("fiscal_year") or 0):
+            best[org] = r
+    out = []
+    for org, r in best.items():
+        started = (r.get("project_start_date") or "")[:10]
+        first, *rest = (r.get("contact_pi_name") or "").split(",")
+        pi = f"{' '.join(rest).strip()} {first.strip()}".strip().title()
+        amt = r.get("award_amount") or 0
+        out.append(Lead(key=f"nih:{r['organization'].get('primary_uei') or org}", source="NIH RePORTER", company=org.title(),
+                        city=(r["organization"].get("org_city") or "").upper(), sector="Health R&D", regulated=True,
+                        signal=f"NIH small-business grant, ${amt:,}: {r.get('project_title', '')}", signal_day=started, amount=amt,
+                        contact=pi, contact_title="Principal Investigator", url=r.get("project_detail_url") or "",
+                        detail=(r.get("abstract_text") or "")[:1500]))
+    return out
+
+
+def nih(http: Http, cfg: dict, today: date, log=print) -> list[Lead]:
+    rows, offset = [], 0
+    years = list(range(today.year - cfg["years_back"], today.year + 1))
+    while True:
+        data = http.call("POST", NIH, json={"criteria": {"org_states": [cfg["state"]], "activity_codes": cfg["activity_codes"], "fiscal_years": years},
+                                            "include_fields": NIH_FIELDS, "limit": 200, "offset": offset}).json()
+        rows += data["results"]
+        offset += len(data["results"])
+        if not data["results"] or offset >= data["meta"]["total"]:
+            break
+    leads = parse_nih(rows)
+    log(f"  NIH RePORTER: {len(rows)} grants, {len(leads)} companies")
+    return leads
+
+
+def score(lead: Lead, metro: set[str], today: date) -> int:
+    points = 3 if lead.regulated else 0
+    points += 3 if lead.city in metro else 0
+    points += 1 if lead.contact else 0
+    points += 1 if lead.phone else 0
+    try:
+        points += 2 if (today - date.fromisoformat(lead.signal_day)).days <= 30 else 0
+    except ValueError:
+        pass
+    return points
+
+
+class Store:
+    def __init__(self, path: str | Path = "leads.db"):
+        self.conn = sqlite3.connect(path)
+        self.conn.row_factory = sqlite3.Row
+        self.conn.executescript(SCHEMA)
+
+    def upsert(self, lead: Lead, today: date) -> None:
+        """Facts refresh; the fit check, and whether it was handed out, stay."""
+        self.conn.execute(
+            "INSERT INTO leads (key, source, company, city, sector, signal, signal_day, amount, contact, contact_title, phone, url, detail, "
+            "regulated, score, first_seen, last_seen) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(key) DO UPDATE SET "
+            "signal=excluded.signal, signal_day=excluded.signal_day, amount=excluded.amount, contact=excluded.contact, "
+            "contact_title=excluded.contact_title, phone=excluded.phone, url=excluded.url, detail=excluded.detail, score=excluded.score, "
+            "last_seen=excluded.last_seen",
+            (lead.key, lead.source, lead.company, lead.city, lead.sector, lead.signal, lead.signal_day, lead.amount, lead.contact,
+             lead.contact_title, lead.phone, lead.url, lead.detail, int(lead.regulated), lead.score, today.isoformat(), today.isoformat()))
+
+    def unchecked(self, limit: int) -> list[sqlite3.Row]:
+        return self.conn.execute("SELECT * FROM leads WHERE fit = '' ORDER BY score DESC, signal_day DESC LIMIT ?", (limit,)).fetchall()
+
+    def save_fit(self, key: str, answer: dict) -> None:
+        self.conn.execute("UPDATE leads SET fit=?, why=?, offer=?, opener=? WHERE key=?",
+                          (answer["fit"], answer.get("why", ""), answer.get("offer", ""), answer.get("opener", ""), key))
+
+    def shown(self) -> list[sqlite3.Row]:
+        return self.conn.execute("SELECT * FROM leads WHERE fit IN ('YES', 'MAYBE') ORDER BY fit = 'YES' DESC, score DESC, signal_day DESC").fetchall()
+
+    def commit(self) -> None:
+        self.conn.commit()
+
+
+def read_answer(text: str) -> dict:
+    found = re.search(r"\{.*\}", text, re.S)
+    answer = json.loads(found.group(0)) if found else {}
+    if answer.get("fit") not in ("YES", "MAYBE", "NO"):
+        raise ValueError("no verdict in the reply")
+    if answer.get("offer") not in OFFERS:
+        answer["offer"] = ""
+    return answer
+
+
+def check_fits(store: Store, cfg: dict, log=print) -> int:
+    import anthropic
+
+    client = anthropic.Anthropic()
+    done = 0
+    for row in store.unchecked(cfg["ai_per_run"]):
+        prompt = PROMPT.format(offers="; ".join(OFFERS), company=row["company"], city=row["city"].title(), sector=row["sector"],
+                               signal=row["signal"], detail=row["detail"])
+        try:
+            reply = client.messages.create(model=cfg["ai_model"], max_tokens=1500, messages=[{"role": "user", "content": prompt}])
+            text = "".join(b.text for b in reply.content if b.type == "text")
+            store.save_fit(row["key"], read_answer(text))
+            store.commit()
+            done += 1
+        except anthropic.APIStatusError as e:
+            log(f"  fit check stopped: {e.message[:160]}")   # account problems fail every lead alike
+            break
+        except (ValueError, json.JSONDecodeError) as e:
+            log(f"  fit check: {row['company']}: {e}")       # retried next run
+    log(f"  fit checks: {done}")
+    return done
+
+
+def write_csv(rows: list[sqlite3.Row], path: Path) -> None:
+    cols = ["fit", "company", "city", "sector", "signal", "contact", "contact_title", "phone", "offer", "opener", "why", "url"]
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(cols)
+        w.writerows([[r[c] for c in cols] for r in rows])
+
+
+def write_report(rows: list[sqlite3.Row], problems: list[str], path: Path, today: date) -> None:
+    e = html.escape
+    cards = "".join(
+        f'<div class="card"><b>{e(r["company"])}</b> <span class="tag">{e(r["fit"])}</span>'
+        f'<div class="meta">{e(r["city"].title())} · {e(r["sector"])} · {e(r["contact"] or "no name on record")}'
+        f'{" (" + e(r["contact_title"]) + ")" if r["contact_title"] else ""}{" · " + e(r["phone"]) if r["phone"] else ""}</div>'
+        f'<div>{e(r["signal"])}</div><div class="meta">{e(r["why"])}</div>'
+        f'<div><b>{e(r["offer"])}</b>{": " if r["offer"] else ""}{e(r["opener"])}</div>'
+        f'<div class="meta"><a href="{e(r["url"])}">Public record</a></div></div>' for r in rows)
+    warn = "".join(f'<p class="warn">{e(p)}</p>' for p in problems)
+    path.write_text(
+        f"<!doctype html><html><head><meta charset='utf-8'><title>Private leads {today}</title><style>"
+        "body{font:15px/1.5 sans-serif;max-width:860px;margin:auto;padding:16px}.card{border:1px solid #ccc;border-radius:10px;"
+        "padding:10px 14px;margin:10px 0}.meta{color:#666;font-size:13px}.tag{font-size:12px;border:1px solid;border-radius:5px;padding:0 6px}"
+        f".warn{{border:2px solid #cf222e;padding:8px;border-radius:8px}}</style></head><body><h1>Private leads, {today:%b %d}</h1>{warn}"
+        f"<p>{len(rows)} companies. A public record gives a reason to write, not proof they need help: check their site first.</p>{cards}</body></html>",
+        encoding="utf-8")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--config", default="config.yaml")
+    ap.add_argument("--db", default="leads.db")
+    ap.add_argument("--no-ai", action="store_true")
+    ap.add_argument("--open", action="store_true")
+    args = ap.parse_args()
+
+    cfg = yaml.safe_load(open(args.config, encoding="utf-8"))
+    load_dotenv(Path(cfg["env_file"]).expanduser())
+    today = date.today()
+    store = Store(args.db)
+    http = Http(cfg["user_agent"], cfg["delay"])
+    metro = set(cfg["metro"])
+    problems = []
+    for name, collect, section in (("SEC Form D", form_d, "form_d"), ("NIH RePORTER", nih, "nih")):
+        try:     # each source stands alone: one failure never stops the other
+            leads = collect(http, cfg[section], today)
+        except Exception as e:  # noqa: BLE001
+            problems.append(f"{name} failed: {type(e).__name__}: {str(e)[:140]}")
+            print(f"  {problems[-1]}")
+            continue
+        if not leads:
+            problems.append(f"{name} found no leads; its format may have changed.")
+        for lead in leads:
+            lead.score = score(lead, metro, today)
+            store.upsert(lead, today)
+    store.commit()
+    if not args.no_ai and os.getenv("ANTHROPIC_API_KEY"):
+        check_fits(store, cfg)
+    rows = store.shown()
+    Path("reports").mkdir(exist_ok=True)
+    report, table = Path("reports") / f"leads-{today}.html", Path("reports") / "leads.csv"
+    write_report(rows, problems, report, today)
+    write_csv(rows, table)
+    print(f"{len(rows)} leads worth a look. Report: {report.resolve()}\nCSV: {table.resolve()}")
+    if args.open:
+        webbrowser.open(report.resolve().as_uri())
+    return 1 if problems and not rows else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
