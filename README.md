@@ -15,6 +15,11 @@ The tool never sends anything and doesn't find email addresses.
 
 SBIR.gov's API answers 403, so it isn't used. LinkedIn and review sites aren't scraped.
 
+## Draft an email
+
+Once you've found an address: `python leads.py --draft "Renalis" --to name@company.example` saves an email to
+Gmail Drafts and adds it to the outreach tracker. It never sends.
+
 ## Run
 
 ```bash

@@ -9,6 +9,7 @@ Usage:
     python leads.py               # collect, check fit, write the report and CSV
     python leads.py --no-ai       # collect only
     python leads.py --open        # and open the report
+    python leads.py --draft "Renalis" --to anna@renalis.example   # save an email to Gmail Drafts; never sends
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from __future__ import annotations
 import argparse
 import csv
 import html
+import imaplib
 import json
 import os
 import re
@@ -25,7 +27,8 @@ import time
 import webbrowser
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
+from email.message import EmailMessage
 from pathlib import Path
 
 import requests
@@ -41,6 +44,10 @@ NIH_FIELDS = ["ProjectTitle", "Organization", "ContactPiName", "AwardAmount", "P
 PLACEHOLDER = re.compile(r"^(n/?a|none|-+|\*|llc)$", re.I)
 ENTITY = re.compile(r"\b(llc|l\.?p\.?|inc|management|partners)\b", re.I)   # firms listed in a person's fields
 VEHICLE = re.compile(r"\b(fund|feeder|investors?|bancorp|spv)\b", re.I)     # raising money isn't building software
+WHO = ("We're Bytronix Labs, a two-person software firm in Glendale Heights. Our principals have built systems for regulated "
+       "environments, including Bloomberg's market data platform and a vaccine management platform across California's 58 counties, "
+       "and the two of us do the work ourselves.")
+SIGNATURE = "\n\nSabeeha Baqui\nCo-Founder, Bytronix Labs LLC\nsupport@bytronixlabs.com · (224) 598-3381\n614 Nolan Avenue, Glendale Heights, IL 60139"
 OFFERS = ("Security readiness review", "AI workflow pilot", "Modernization assessment")
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS leads (
@@ -317,18 +324,59 @@ def write_report(rows: list[sqlite3.Row], problems: list[str], path: Path, today
         encoding="utf-8")
 
 
+def compose(row: sqlite3.Row, to: str) -> tuple[str, str]:
+    """(subject, body) for one lead."""
+    first = (row["contact"].split() or ["there"])[0]
+    offer = {"Security readiness review": "a fixed-price security readiness review",
+             "AI workflow pilot": "a fixed-price AI workflow pilot",
+             "Modernization assessment": "a fixed-price modernization assessment"}.get(row["offer"], "a small fixed-price first project")
+    body = (f"Hi {first},\n\n{row['opener']}\n\n{WHO}\n\nA good first step would be {offer}, with the scope and price agreed up front. "
+            f"Would a 15-minute call next week be useful?\n\nIf this isn't useful, just say so and I won't write again.{SIGNATURE}")
+    return f"Quick question for {row['company']}", body
+
+
+def save_draft(row: sqlite3.Row, to: str, tracker: Path) -> None:
+    """To Gmail Drafts and the tracker. Sending stays with the user."""
+    subject, body = compose(row, to)
+    msg = EmailMessage()
+    msg["From"], msg["To"], msg["Subject"] = os.environ["SMTP_USER"], to, subject
+    msg.set_content(body)
+    conn = imaplib.IMAP4_SSL("imap.gmail.com", 993, timeout=60)
+    try:
+        conn.login(os.environ["SMTP_USER"], os.environ["SMTP_PASSWORD"])
+        conn.append('"[Gmail]/Drafts"', "\\Draft", imaplib.Time2Internaldate(time.time()), msg.as_bytes())
+    finally:
+        conn.logout()
+    with open(tracker, newline="", encoding="utf-8") as f:
+        columns = next(csv.reader(f))
+    with open(tracker, "a", newline="", encoding="utf-8") as f:
+        csv.DictWriter(f, columns, restval="").writerow(
+            {"Company": row["company"], "Contact": row["contact"], "Email": to, "Track": "Private", "Opportunity": subject,
+             "Notes": f"Draft saved {date.today()}"})
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config", default="config.yaml")
     ap.add_argument("--db", default="leads.db")
     ap.add_argument("--no-ai", action="store_true")
     ap.add_argument("--open", action="store_true")
+    ap.add_argument("--draft", help="part of a company name: save an email for it to Drafts")
+    ap.add_argument("--to", help="the address you found, with --draft")
     args = ap.parse_args()
 
     cfg = yaml.safe_load(open(args.config, encoding="utf-8"))
     load_dotenv(Path(cfg["env_file"]).expanduser())
     today = date.today()
     store = Store(args.db)
+    if args.draft:
+        rows = store.conn.execute("SELECT * FROM leads WHERE company LIKE ? AND opener <> ''", (f"%{args.draft}%",)).fetchall()
+        if len(rows) != 1 or not args.to:
+            print(f"Need one company and --to; {len(rows)} match: " + ", ".join(r["company"] for r in rows[:8]))
+            return 1
+        save_draft(rows[0], args.to, Path(cfg["tracker"]).expanduser())
+        print(f"Draft saved for {rows[0]['company']}. Nothing was sent.")
+        return 0
     http = Http(cfg["user_agent"], cfg["delay"])
     metro = set(cfg["metro"])
     problems = []
