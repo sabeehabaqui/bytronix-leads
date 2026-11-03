@@ -1,0 +1,9 @@
+[Unit]
+Description=Top up private drafts weekdays at 7:30 Central, before the 8:00 brief
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 07:30:00 America/Chicago
+Persistent=true
+
+[Install]
+WantedBy=timers.target

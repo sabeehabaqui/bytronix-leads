@@ -15,6 +15,12 @@ The tool never sends anything and doesn't find email addresses.
 
 SBIR.gov's API answers 403, so it isn't used. LinkedIn and review sites aren't scraped.
 
+## Daily private drafts
+
+`python leads.py --keep-drafts 5` keeps five private emails waiting in Gmail Drafts. It writes only to good-fit leads whose own site
+publishes a general address (robots.txt respected, nothing guessed), skips companies already contacted, and never sends. A timer
+runs it weekdays at 7:30 Central.
+
 ## Draft an email
 
 Once you've found an address: `python leads.py --draft "Renalis" --to name@company.example` saves an email to

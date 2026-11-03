@@ -5,6 +5,7 @@ user_agent: "BytronixLabs-lead-finder/1.0 (support@bytronixlabs.com)"   # the SE
 delay: 0.5                 # seconds between requests
 ai_model: claude-sonnet-5-5
 tracker: ~/bytronix-outreach/outreach_tracker.csv
+library: ~/bid-scanner-1/company/library.md   # the only facts an email may state
 ai_per_run: 10             # fit checks each run; cached per lead
 
 form_d:
@@ -28,3 +29,10 @@ metro:                     # Chicago-area cities rank ahead of the rest of Illin
    AURORA, ELGIN, "DES PLAINES", "PARK RIDGE", GLENVIEW, NORTHBROOK, DEERFIELD, LIBERTYVILLE, "LAKE FOREST", "LONG GROVE",
    WILMETTE, GLENCOE, "OAK PARK", ITASCA, ROSEMONT, ROMEOVILLE, BOLINGBROOK, LISLE, WOODRIDGE, "WEST CHICAGO", PLAINFIELD,
    WARRENVILLE, BARTLETT, "BUFFALO GROVE", "VERNON HILLS", LINCOLNSHIRE, "OAK LAWN", "ORLAND PARK", TINLEY, JOLIET]
+
+fdic:
+  state: IL
+  min_assets: 50000000       # smaller banks rarely buy outside software work
+  max_assets: 3000000000     # bigger ones have their own security teams
+
+metro_counties: [Cook, DuPage, Lake, Kane, Will, McHenry, Kendall]   # Chicago area, by county

@@ -73,6 +73,22 @@ def main():
         check("won't write again" in body, "postal address and opt-out")
         check("Steddy" not in body and "Acme Health" in subject, "draft is clean")
         store.conn.close()
+    check(leads.pick_email(["loans@bank.com", "info@bank.com", "jane.doe@bank.com", "x@other.com"], "bank.com") == "info@bank.com", "a general inbox on their own domain")
+    check(leads.pick_email(["privacy@bank.com", "jane@bank.com"], "bank.com") == "", "no personal or service addresses")
+    bank2 = leads.Lead("fdic:2", "FDIC", "Far Bank", "PEORIA", "Community bank", "s", "2026-11-02", regulated=True, detail="2 offices; Peoria County")
+    bank3 = leads.Lead("fdic:3", "FDIC", "Near Bank", "BARRINGTON", "Community bank", "s", "2026-11-02", regulated=True, detail="2 offices; Lake County")
+    check(leads.score(bank3, set(), today, {"Lake"}) > leads.score(bank2, set(), today, {"Lake"}), "Chicago-area counties rank first")
+    check(leads.FORBIDDEN.search("our client Steddy") and leads.FORBIDDEN.search("614 Nolan Avenue") and not leads.FORBIDDEN.search("a fintech startup"), "forbidden claims and the home address are caught")
+    with tempfile.TemporaryDirectory() as tmp:
+        store = leads.Store(Path(tmp) / "b.db")
+        bank3.score = 6
+        store.upsert(bank3, today)
+        store.mark_banks_fit()
+        row = store.to_draft(5)[0]
+        check(row["fit"] == "YES" and row["offer"] == "Security readiness review", "banks are a fit without an AI check")
+        store.conn.execute("UPDATE leads SET email_checked = '2026-11-02', email = ''")
+        check(not store.to_draft(5), "a lead with no public address isn't retried")
+        store.conn.close()
     print("All checks passed")
 
 
