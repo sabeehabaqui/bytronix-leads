@@ -47,7 +47,7 @@ VEHICLE = re.compile(r"\b(fund|feeder|investors?|bancorp|spv)\b", re.I)     # ra
 WHO = ("We're Bytronix Labs, a two-person software firm in Glendale Heights. Our principals have built systems for regulated "
        "environments, including Bloomberg's market data platform and a vaccine management platform across California's 58 counties, "
        "and the two of us do the work ourselves.")
-SIGNATURE = "\n\nSabeeha Baqui\nCo-Founder, Bytronix Labs LLC\nsupport@bytronixlabs.com · (224) 598-3381\n614 Nolan Avenue, Glendale Heights, IL 60139"
+SIGNATURE = "\n\nSabeeha Baqui\nCo-Founder, Bytronix Labs LLC\nsupport@bytronixlabs.com · (224) 598-3381\n1 W Old State Capitol Plaza, Springfield, IL 62701"   # registered agent address
 OFFERS = ("Security readiness review", "AI workflow pilot", "Modernization assessment")
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS leads (

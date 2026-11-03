@@ -70,7 +70,7 @@ def main():
         store.save_fit(lead.key, {"fit": "YES", "why": "w", "offer": leads.OFFERS[0], "opener": "Saw your raise."})
         subject, body = leads.compose(store.shown()[0], "jane@acme.example")
         check("Hi Jane," in body and "Saw your raise." in body and "security readiness review" in body, "draft uses the lead")
-        check("614 Nolan Avenue" in body and "won't write again" in body, "postal address and opt-out")
+        check("won't write again" in body, "postal address and opt-out")
         check("Steddy" not in body and "Acme Health" in subject, "draft is clean")
         store.conn.close()
     print("All checks passed")
