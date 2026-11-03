@@ -89,6 +89,8 @@ def main():
         store.conn.execute("UPDATE leads SET email_checked = '2026-11-02', email = ''")
         check(not store.to_draft(5), "a lead with no public address isn't retried")
         store.conn.close()
+    check(leads.cu_name({"CU_NAME": "NATIONAL POLICE", "CU_TYPE": "1"}) == "National Police Federal Credit Union"
+          and leads.cu_name({"CU_NAME": "SELFRELIANCE", "CU_TYPE": "2"}) == "Selfreliance Credit Union", "credit union names follow their charter")
     print("All checks passed")
 
 

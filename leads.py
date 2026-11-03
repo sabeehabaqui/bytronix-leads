@@ -281,6 +281,11 @@ def fdic(http: Http, cfg: dict, today: date, log=print) -> list[Lead]:
     return out
 
 
+def cu_name(cu: dict) -> str:
+    """The credit union's formal name. NCUA type 1 is federally chartered."""
+    return f"{cu['CU_NAME'].title()} {'Federal ' if str(cu.get('CU_TYPE')).strip() == '1' else ''}Credit Union"
+
+
 def ncua(http: Http, cfg: dict, today: date, log=print) -> list[Lead]:
     """Illinois credit unions from NCUA's latest quarterly call report: same needs as community banks."""
     page = http.call("GET", NCUA_PAGE).text
@@ -302,7 +307,7 @@ def ncua(http: Http, cfg: dict, today: date, log=print) -> list[Lead]:
         if not cfg["min_assets"] <= assets.get(number, 0) <= cfg["max_assets"] or not site:
             continue
         county = counties.get(number, "").removesuffix(" County")
-        out.append(Lead(key=f"ncua:{number}", source="NCUA", company=f"{cu['CU_NAME'].title()} {'Federal ' if cu.get('CU_TYPE') == '1' else ''}Credit Union",   # type 1 is federally chartered city=cu["CITY"].upper(),
+        out.append(Lead(key=f"ncua:{number}", source="NCUA", company=cu_name(cu), city=cu["CITY"].upper(),
                         sector="Credit union", regulated=True, signal=f"Federally insured credit union, ${assets[number] / 1e6:,.0f}M in assets",
                         signal_day=today.isoformat(), amount=int(assets[number]), url=site if site.startswith("http") else f"https://{site}",
                         detail=f"{county + ' County' if county else cu['CITY'].title()}; call report {Path(latest).stem[-7:]}"))
