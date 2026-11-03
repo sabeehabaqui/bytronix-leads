@@ -1,6 +1,7 @@
 [Unit]
 Description=Keep private outreach drafts waiting in Gmail (never sends)
-After=network-online.target
+# Runs after these when they're due at the same time, e.g. after the computer wakes and missed runs catch up.
+After=network-online.target bid-scanner.service
 Wants=network-online.target
 
 [Service]
