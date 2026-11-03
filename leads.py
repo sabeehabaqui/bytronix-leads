@@ -2,8 +2,8 @@
 """Private-sector leads: Illinois companies with a fresh, public reason to spend on software.
 
 Sources are official and public: SEC Form D filings (a company just raised money), NIH
-RePORTER (a small company holds an SBIR/STTR grant) and FDIC bank data (Illinois community banks,
-which are regulated and lean on outside vendors). It never scrapes LinkedIn or review sites.
+RePORTER (a small company holds an SBIR/STTR grant), FDIC bank data and NCUA call reports (Illinois
+community banks and credit unions, which are regulated and lean on outside vendors). It never scrapes LinkedIn or review sites.
 --keep-drafts writes emails for good-fit leads with a public address and saves them to Gmail
 Drafts; it never sends anything.
 
@@ -21,6 +21,7 @@ import argparse
 import csv
 import html
 import imaplib
+import io
 import json
 import os
 import re
@@ -29,6 +30,7 @@ import sys
 import time
 import webbrowser
 import xml.etree.ElementTree as ET
+import zipfile
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from email.message import EmailMessage
@@ -45,6 +47,8 @@ ARCHIVE = "https://www.sec.gov/Archives/edgar/data/{cik}/{adsh}/primary_doc.xml"
 FILING = "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={cik}&type=D"
 NIH = "https://api.reporter.nih.gov/v2/projects/search"
 FDIC = "https://api.fdic.gov/banks/institutions"
+NCUA_PAGE = "https://ncua.gov/analysis/credit-union-corporate-call-report-data/quarterly-data"
+NCUA_FILES = "https://ncua.gov"
 CONTACT_PAGES = ("/contact", "/contact-us", "/about", "/about-us", "")
 EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 NOT_OUTREACH = re.compile(r"^(privacy|careers?|jobs?|hr|recruit\w*|talent|noreply|no-reply|donotreply|webmaster|press|media|billing|"
@@ -277,6 +281,35 @@ def fdic(http: Http, cfg: dict, today: date, log=print) -> list[Lead]:
     return out
 
 
+def ncua(http: Http, cfg: dict, today: date, log=print) -> list[Lead]:
+    """Illinois credit unions from NCUA's latest quarterly call report: same needs as community banks."""
+    page = http.call("GET", NCUA_PAGE).text
+    latest = sorted(set(re.findall(r'href="(/files/publications/analysis/call-report-data-\d{4}-\d{2}\.zip)"', page)))[-1]
+    cache = Path("data") / Path(latest).name
+    if not cache.exists():                     # quarterly, so one download serves months of runs
+        cache.parent.mkdir(exist_ok=True)
+        cache.write_bytes(http.call("GET", NCUA_FILES + latest).content)
+    z = zipfile.ZipFile(cache)
+    rows = lambda name: csv.DictReader(io.TextIOWrapper(z.open(name), encoding="latin-1"))
+    unions = {r["CU_NUMBER"]: r for r in rows("FOICU.txt") if r["STATE"] == cfg["state"]}
+    assets = {r["CU_NUMBER"]: float(r.get("ACCT_010") or 0) for r in rows("FS220.txt") if r["CU_NUMBER"] in unions}
+    sites = {r["CU_NUMBER"]: (r.get("ACCT_891") or r.get("Acct_891") or "").strip() for r in rows("FS220D.txt") if r["CU_NUMBER"] in unions}
+    counties = {r["CU_NUMBER"]: (r.get("PhysicalAddressCountyName2") or "").strip().title()
+                for r in rows("Credit Union Branch Information.txt") if r["CU_NUMBER"] in unions and str(r.get("MainOffice")).lower() in ("yes", "true", "1")}
+    out = []
+    for number, cu in unions.items():
+        site = sites.get(number, "").lower()
+        if not cfg["min_assets"] <= assets.get(number, 0) <= cfg["max_assets"] or not site:
+            continue
+        county = counties.get(number, "").removesuffix(" County")
+        out.append(Lead(key=f"ncua:{number}", source="NCUA", company=f"{cu['CU_NAME'].title()} {'Federal ' if cu.get('CU_TYPE') == '1' else ''}Credit Union",   # type 1 is federally chartered city=cu["CITY"].upper(),
+                        sector="Credit union", regulated=True, signal=f"Federally insured credit union, ${assets[number] / 1e6:,.0f}M in assets",
+                        signal_day=today.isoformat(), amount=int(assets[number]), url=site if site.startswith("http") else f"https://{site}",
+                        detail=f"{county + ' County' if county else cu['CITY'].title()}; call report {Path(latest).stem[-7:]}"))
+    log(f"  NCUA: {len(unions)} Illinois credit unions, {len(out)} in range")
+    return out
+
+
 def pick_email(addresses: list[str], domain: str) -> str:
     """A general inbox on the company's own domain. Personal addresses and service desks are skipped."""
     for addr in sorted({a.lower().rstrip(".") for a in addresses}, key=lambda a: not BEST_INBOX.match(a.split("@")[0])):
@@ -342,9 +375,9 @@ class Store:
              lead.contact_title, lead.phone, lead.url, lead.detail, int(lead.regulated), lead.score, today.isoformat(), today.isoformat()))
 
     def mark_banks_fit(self) -> None:
-        """Every community bank is regulated and buys security work; no AI check needed to say so."""
+        """Every community bank and credit union is regulated and buys security work; no AI check needed to say so."""
         self.conn.execute("UPDATE leads SET fit = 'YES', offer = 'Security readiness review', why = 'Community banks must meet federal "
-                          "security expectations and usually rely on outside vendors.' WHERE source = 'FDIC' AND fit = ''")
+                          "security expectations and usually rely on outside vendors.' WHERE source IN ('FDIC', 'NCUA') AND fit = ''")
 
     def to_draft(self, limit: int) -> list[sqlite3.Row]:
         """Good-fit leads not yet written to, best first: nearby and regulated, then the rest."""
@@ -352,7 +385,7 @@ class Store:
                                  "ORDER BY score DESC, signal_day DESC LIMIT ?", (limit,)).fetchall()
 
     def unchecked(self, limit: int) -> list[sqlite3.Row]:
-        return self.conn.execute("SELECT * FROM leads WHERE source <> 'FDIC' AND fit = '' ORDER BY score DESC, signal_day DESC LIMIT ?", (limit,)).fetchall()
+        return self.conn.execute("SELECT * FROM leads WHERE source NOT IN ('FDIC', 'NCUA') AND fit = '' ORDER BY score DESC, signal_day DESC LIMIT ?", (limit,)).fetchall()
 
     def save_fit(self, key: str, answer: dict) -> None:
         self.conn.execute("UPDATE leads SET fit=?, why=?, offer=?, opener=? WHERE key=?",
@@ -468,7 +501,7 @@ def write_email(row: sqlite3.Row, cfg: dict) -> tuple[str, str]:
     """(subject, body) for a lead, in Sabeeha's style, from approved facts only."""
     import anthropic
 
-    first = row["contact"].split()[0] if row["contact"] and row["source"] != "FDIC" else ""
+    first = row["contact"].split()[0] if row["contact"] and row["source"] not in ("FDIC", "NCUA") else ""
     prompt = WRITE_PROMPT.format(library=Path(cfg["library"]).expanduser().read_text(encoding="utf-8"), company=row["company"],
                                  city=row["city"].title(), sector=row["sector"], signal=row["signal"], why=row["why"], offer=row["offer"],
                                  detail=row["detail"][:1500], greeting=f"Hi {first}," if first else "Hello,", example=EXAMPLES)
@@ -551,7 +584,8 @@ def main() -> int:
         return 0
     metro = set(cfg["metro"])
     problems = []
-    for name, collect, section in (("SEC Form D", form_d, "form_d"), ("NIH RePORTER", nih, "nih"), ("FDIC", fdic, "fdic")):
+    for name, collect, section in (("SEC Form D", form_d, "form_d"), ("NIH RePORTER", nih, "nih"), ("FDIC", fdic, "fdic"),
+                                   ("NCUA", ncua, "fdic")):
         try:     # each source stands alone: one failure never stops the other
             leads = collect(http, cfg[section], today)
         except Exception as e:  # noqa: BLE001

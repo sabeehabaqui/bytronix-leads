@@ -30,7 +30,7 @@ metro:                     # Chicago-area cities rank ahead of the rest of Illin
    WILMETTE, GLENCOE, "OAK PARK", ITASCA, ROSEMONT, ROMEOVILLE, BOLINGBROOK, LISLE, WOODRIDGE, "WEST CHICAGO", PLAINFIELD,
    WARRENVILLE, BARTLETT, "BUFFALO GROVE", "VERNON HILLS", LINCOLNSHIRE, "OAK LAWN", "ORLAND PARK", TINLEY, JOLIET]
 
-fdic:
+fdic:                      # also used for NCUA credit unions
   state: IL
   min_assets: 50000000       # smaller banks rarely buy outside software work
   max_assets: 3000000000     # bigger ones have their own security teams

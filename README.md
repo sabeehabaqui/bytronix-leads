@@ -7,6 +7,7 @@ hands out one YES lead a day.
 | Source | Signal | Contact |
 |---|---|---|
 | SEC Form D | Raised money in the last 60 days. Health, financial, insurance and technology companies; funds, property and holding vehicles are left out. | Named officer and company phone from the filing |
+| FDIC and NCUA | Illinois community banks and credit unions with $50M-$3B in assets: regulated, security-heavy, usually without big tech teams | A general address from their own site |
 | NIH RePORTER | Holds an NIH small-business (SBIR/STTR) grant | Principal investigator |
 
 Claude checks each lead (YES / MAYBE / NO), picks one of the three starting offers and writes an
