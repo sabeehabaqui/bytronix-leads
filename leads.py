@@ -331,7 +331,7 @@ def compose(row: sqlite3.Row, to: str) -> tuple[str, str]:
              "AI workflow pilot": "a fixed-price AI workflow pilot",
              "Modernization assessment": "a fixed-price modernization assessment"}.get(row["offer"], "a small fixed-price first project")
     body = (f"Hi {first},\n\n{row['opener']}\n\n{WHO}\n\nA good first step would be {offer}, with the scope and price agreed up front. "
-            f"Would a 15-minute call next week be useful?\n\nIf this isn't useful, just say so and I won't write again.{SIGNATURE}")
+            f"If that sounds useful, just reply and I'll send more detail.\n\nIf this isn't useful, just say so and I won't write again.{SIGNATURE}")
     return f"Quick question for {row['company']}", body
 
 
