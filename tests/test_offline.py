@@ -91,6 +91,8 @@ def main():
         store.conn.close()
     check(leads.cu_name({"CU_NAME": "NATIONAL POLICE", "CU_TYPE": "1"}) == "National Police Federal Credit Union"
           and leads.cu_name({"CU_NAME": "SELFRELIANCE", "CU_TYPE": "2"}) == "Selfreliance Credit Union", "credit union names follow their charter")
+    check(leads.AI_TELLS.search("This is exactly the kind of work we love!") and leads.AI_TELLS.search("we leverage AI")
+          and not leads.AI_TELLS.search(leads.EXAMPLES), "generated-sounding phrases are caught, and the examples pass")
     print("All checks passed")
 
 
