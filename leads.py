@@ -40,6 +40,8 @@ from urllib.robotparser import RobotFileParser
 
 import requests
 import yaml
+
+import usage
 from dotenv import load_dotenv
 
 SEARCH = "https://efts.sec.gov/LATEST/search-index"
@@ -438,7 +440,9 @@ def check_fits(store: Store, cfg: dict, log=print) -> int:
         prompt = PROMPT.format(offers="; ".join(OFFERS), company=row["company"], city=row["city"].title(), sector=row["sector"],
                                signal=row["signal"], detail=row["detail"])
         try:
-            reply = client.messages.create(model=cfg["ai_model"], max_tokens=1500, messages=[{"role": "user", "content": prompt}])
+            reply = client.messages.create(model=cfg.get("ai_small_model", cfg["ai_model"]), max_tokens=1500,
+                                           messages=[{"role": "user", "content": prompt}])
+            usage.record(reply, "lead finder", "lead fit check")
             text = "".join(b.text for b in reply.content if b.type == "text")
             store.save_fit(row["key"], read_answer(text))
             store.commit()
@@ -527,6 +531,7 @@ def write_email(row: sqlite3.Row, cfg: dict) -> tuple[str, str]:
                                  city=row["city"].title(), sector=row["sector"], signal=row["signal"], why=row["why"], offer=row["offer"],
                                  detail=row["detail"][:1500], greeting=f"Hi {first}," if first else "Hello,", example=EXAMPLES)
     reply = anthropic.Anthropic().messages.create(model=cfg["ai_model"], max_tokens=2000, messages=[{"role": "user", "content": prompt}])
+    usage.record(reply, "lead finder", "private email")
     raw = "".join(b.text for b in reply.content if b.type == "text")
     found = re.search(r"\{.*\}", raw, re.S)
     answer = json.loads(found.group(0)) if found else {}

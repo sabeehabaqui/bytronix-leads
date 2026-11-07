@@ -3,7 +3,8 @@
 env_file: ~/bid-forecasting-tool/.env   # same Anthropic key as the other tools
 user_agent: "BytronixLabs-lead-finder/1.0 (support@bytronixlabs.com)"   # the SEC requires a contact here
 delay: 0.5                 # seconds between requests
-ai_model: claude-sonnet-5-5
+ai_model: claude-sonnet-5-5        # private emails, written in Sabeeha's name
+ai_small_model: claude-haiku-5-5   # lead fit checks; about 20x cheaper
 tracker: ~/bytronix-outreach/outreach_tracker.csv
 library: ~/bid-scanner-1/company/library.md   # the only facts an email may state
 ai_per_run: 10             # fit checks each run; cached per lead
